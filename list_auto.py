@@ -1,10 +1,11 @@
 import csv
 import pyconll
 import os
-
+import re
 
 file_name_tsv = 'export-1000-UD_French-GSD.tsv'
 file_name_conllu = 'export-1000-UD_French-GSD.conllu'
+new_file = 'export' + re.findall(r'(-.*)\.', file_name_tsv)[0] + '_with_infinitive.csv'
 
 
 def tsv_list(file):
@@ -34,19 +35,22 @@ data_conllu = pyconll.iter_from_file(file_name_conllu)  # load the conllu file a
                                                         # sentence object. Use loop for to iterate all the tokens.
 
 # you can find all token attributes at the title line of conllu file
-with open('export-1000-UD_French-GSD_with_infinitive.csv', 'w',  newline='', encoding='utf-8') as csvfile:
+with open(new_file, 'w',  newline='', encoding='utf-8') as csvfile:
     new_data = csv.writer(csvfile, delimiter='\t')      # prepare for writing new data in csv format
     index = 0                                           # reduce the iterating element, no need to always start from 0
     for sentence in data_conllu:
         match = False                                   # if sent_id does not match, write '---------------' as a mark
         for i in range(index, len(data_tsv)):           # reduce the iterating element, no need to always start from 0
             if sentence.id == data_tsv[i][0]:           # tsv and conllu 's sent_id matching
+                token_id = 0
                 for token in sentence:                  # if matched, iterate all the tokens of sentence
+                    token_id += 1                       # record index for getting the real lemma if 'gonna', "let's"
                     if token.form == data_tsv[i][2]:    # find the pivot word
                         new_line = data_tsv[i][:3]      # construct a new line containing : the sent_id, left context,
-                        new_line.append(token.lemma)    # pivot word, pivot word's infinitive
+                                                        # pivot word, pivot word's infinitive
+                        new_line.append(token.lemma if token.lemma else sentence[token_id].lemma)  # resolve 'gonna'...
                         new_line.append(data_tsv[i][-1])  # right context
-                        # print(new_line)               # test for check every new line
+                        # print(new_line)               # test : check every new line
                         new_data.writerow(new_line)     # write in new csv file
                         match = True
                         break                           # avoid duplicate write-in caused by other words identical to
@@ -56,5 +60,5 @@ with open('export-1000-UD_French-GSD_with_infinitive.csv', 'w',  newline='', enc
         index += 1                                      # reduce the iterating element, no need to always start from 0
 
 # view the result
-# for i in tsv_list('export-1000-UD_French-GSD_with_infinitive.csv'):
+# for i in tsv_list(new_file):
 #     print(i)
