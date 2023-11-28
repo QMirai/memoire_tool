@@ -7,7 +7,8 @@ import os
 
 def output_filename(path, new_extension='.csv'):
     path_without_ext, extension = os.path.splitext(path)
-    return os.path.basename(path_without_ext) + new_extension
+    output_folder_name = re.search(r"\\\\(output.+verb)", path_without_ext).group(1)
+    return output_folder_name, os.path.basename(path_without_ext) + new_extension
 
 
 class AutoList:
@@ -66,7 +67,7 @@ class GrewAutoList:
     def __init__(self, input_json, input_conllu_json):
         self.input_json = input_json
         self.input_conllu_json = input_conllu_json
-        self.output = output_filename(self.input_json)
+        self.output_folder_name, self.output_filename = output_filename(self.input_json)
         with open(self.input_conllu_json, 'r', encoding='utf-8') as read_content:
             self.uds = json.load(read_content)['corpora']
         with open(self.input_json, 'r', encoding='utf-8') as read_content:
@@ -81,7 +82,8 @@ class GrewAutoList:
         conllus = []
         for index in range(len(self.uds) - 1, -1, -1):  # order in conllu_list opposed to order in sentences_list
             if self.uds[index]["id"] == ud_json:
-                path_conllu = "D:\\cours\\linux\\ubuntu\\ubuntu-22.04.3\\share\\" + self.uds[index]["directory"][7:]
+                directory = re.search(r"/share/(.*)", self.uds[index]["directory"])
+                path_conllu = r"D:\\cours\\linux\\ubuntu\\ubuntu-22.04.3\\share\\" + directory.group(1)
                 for conllu in self.uds[index]["files"]:
                     conllus += pyconll.load_from_file(os.path.join(path_conllu, conllu))
                 conllus = sorted(conllus, key=lambda x: x.id)  # necessary, not always in order in test conllu part.
@@ -94,9 +96,10 @@ class GrewAutoList:
         :return:
         """
         for ud, selected_sents in self.data_list.items():
-            ordered_sents = sorted(selected_sents, key=lambda x: x['sent_id'])
-            conllus = self.__preparation_conllus(ud)
-            yield ordered_sents, conllus, ud
+            if len(selected_sents):
+                ordered_sents = sorted(selected_sents, key=lambda x: x['sent_id'])
+                conllus = self.__preparation_conllus(ud)
+                yield ordered_sents, conllus, ud
 
     @staticmethod
     def __accurate_split(sent_json, objective_token):
@@ -119,8 +122,63 @@ class GrewAutoList:
         # print(new_sent)
         return new_sent.split(split_text)
 
+    @staticmethod
+    def get_gp(conllu_sent, token_id):
+        """
+        It will iterate all the tokens of a sentence once.
+        :param conllu_sent: target sentence.
+        :param token_id: target verb's token id.
+        :return: GP that the sentence reflects, e.g. `N_V_N`.
+        """
+        ignore_deprel = {'mod', 'punct', 'dislocated', 'cc', 'discourse', 'vocative', 'udep', 'conj', 'conj:coord',
+                         'conj:dicto', 'conj:appos', 'parataxis', 'parataxis:insert'}
+        # concerned_deprel = {'subj@expl', 'PRON', 'NOUN', 'PROPN', 'VERB', 'AUX', 'SCONJ', 'ADP'}
+        gp_elements = []
+        token_prep_id = ''  # record the target verb governing preposition's token id, e.g.`à` in `commencer à`.
+        token_conj_id = ''
+        ids = [token_id, token_prep_id, token_conj_id]
+        moods = ['Cnd', 'Sub', 'Inf', 'Part', 'Ind']
+
+        def get_mood(_token):
+            """Return V or subordinate V + mood suffix or verb form suffix, e.g. Vcnd, Vsub"""
+            for mood in moods:
+                if mood in _token.feats.get('Mood', '') or mood in _token.feats.get('VerbForm', ''):
+                    return f'V{mood.lower()}'
+            else:
+                return 'V'
+
+        for token in conllu_sent:
+            if token.head in ids and\
+                    token.deprel not in ignore_deprel and\
+                    not (token.deprel == 'subj@expl' and '-' in token.form):  # exclude -t-il
+                if token.deprel == 'subj@expl':  # il expletive
+                    gp_elements.append('Exp')
+                elif token.upos in {'PRON', 'NOUN', 'PROPN', 'NUM'}:
+                    gp_elements.append('N')
+                elif token.upos in {'VERB', 'AUX'}:
+                    gp_elements.append(get_mood(token))
+                elif token.upos == 'SCONJ':
+                    ids[2] = token.id
+                    gp_elements.append(token.lemma)
+                elif token.upos == 'ADP':
+                    ids[1] = token.id
+                    gp_elements.append(token.lemma)
+                else:
+                    gp_elements.append(token.upos)
+            elif token.id == token_id:
+                gp_elements.append("V")
+        gp = '_'.join(gp_elements)
+        return gp
+
+    # @staticmethod
+    # def __gp(conllu_sent, token_id):
+    #     ignore_deprel = {'mod', 'punct', 'dislocated', 'cc', 'discourse', 'vocative', 'udep', 'conj', 'conj:coord',
+    #                      'conj:dicto', 'conj:appos', 'parataxis'}
+    #     deps = [token for token in conllu_sent if token.head == token_id and token.deprel not in ignore_deprel]
     def insert_infinitive(self):
-        with open(self.output, 'w', newline='', encoding='utf-8') as csvfile:
+        os.makedirs(f"output/{self.output_folder_name}", exist_ok=True)
+        with open(os.path.join("output", self.output_folder_name, self.output_filename), 'w', newline='',
+                  encoding='utf-8') as csvfile:
             new_data = csv.writer(csvfile, delimiter='\t')
             for sentences_ordered, conllus, ud in self.__preparation_sent():
                 index = 0
@@ -130,11 +188,24 @@ class GrewAutoList:
                     while i < len(conllus):
                         if sent_json['sent_id'] == conllus[i].id:
                             line = []
-                            token_goal = conllus[i][sent_json['matching']['nodes']['GOV']]
+                            token_id = sent_json['matching']['nodes']['G']
+                            token_goal = conllus[i][token_id]
+                            # if conllus[i][token_id].head != "0":
+                            #     if conllus[i][conllus[i][token_id].head].upos in {'AUX', 'VERB'}:
+                            #         token_goal_aux = conllus[i][token_id].head
+                            #     else:
+                            #         token_goal_aux = None
+                            # else:
+                            #     token_goal_aux = None
                             contexts = self.__accurate_split(conllus[i], token_goal.id) \
                                 if conllus[i].text.count(token_goal.form) != 1\
                                 else conllus[i].text.split(token_goal.form)
-                            line.extend((conllus[i].id, contexts[0], token_goal.form, token_goal.lemma, contexts[1]))
+                            line.extend((conllus[i].id,
+                                         token_goal.lemma,
+                                         self.get_gp(conllus[i], token_id),
+                                         contexts[0],
+                                         token_goal.form,
+                                         contexts[1]))
                             new_data.writerow(line)
                             print(line)
                             found_match = True
